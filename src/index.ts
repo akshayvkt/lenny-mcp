@@ -244,6 +244,24 @@ async function runSSE() {
     });
   });
 
+  // OAuth endpoints - return JSON 404 to indicate no auth required
+  // (prevents Claude Code from getting confused by HTML 404 errors)
+  app.get("/.well-known/oauth-authorization-server", (_req: Request, res: Response) => {
+    res.status(404).json({ error: "not_found", message: "No authorization required" });
+  });
+
+  app.get("/.well-known/oauth-protected-resource", (_req: Request, res: Response) => {
+    res.status(404).json({ error: "not_found", message: "No authorization required" });
+  });
+
+  app.post("/register", (_req: Request, res: Response) => {
+    res.status(404).json({ error: "not_found", message: "No registration required" });
+  });
+
+  app.post("/oauth/register", (_req: Request, res: Response) => {
+    res.status(404).json({ error: "not_found", message: "No registration required" });
+  });
+
   // SSE endpoint - clients connect here
   app.get("/sse", async (_req: Request, res: Response) => {
     console.error(`New SSE connection from ${_req.ip}`);
