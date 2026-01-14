@@ -33,6 +33,11 @@ function createMCPServer() {
     {
       name: "lenny-transcripts",
       version: "1.0.0",
+      icons: [{
+        src: "https://lenny-mcp.onrender.com/icon.jpeg",
+        mimeType: "image/jpeg",
+        sizes: ["512x512"],
+      }],
     },
     {
       capabilities: {
