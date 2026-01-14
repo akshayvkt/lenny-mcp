@@ -262,12 +262,6 @@ async function runHTTP() {
       const server = createMCPServer();
       await server.connect(transport);
 
-      // Store transport by session ID once it's assigned
-      if (transport.sessionId) {
-        transports.set(transport.sessionId, transport);
-        console.error(`New session created: ${transport.sessionId}`);
-      }
-
       // Clean up on close
       transport.onclose = () => {
         if (transport?.sessionId) {
@@ -279,6 +273,12 @@ async function runHTTP() {
 
     // Handle the request
     await transport.handleRequest(req, res, req.body);
+
+    // Store transport by session ID AFTER handleRequest (session ID is assigned during initialize)
+    if (transport.sessionId && !transports.has(transport.sessionId)) {
+      transports.set(transport.sessionId, transport);
+      console.error(`New session stored: ${transport.sessionId}`);
+    }
   });
 
   // Handle GET requests to /mcp for SSE streams (backwards compatibility)
