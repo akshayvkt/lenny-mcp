@@ -4,7 +4,7 @@ Search 284 episodes of [Lenny's Podcast](https://www.lennysnewsletter.com/podcas
 
 ## Quick Start
 
-### Option 1: Claude Desktop / Claude.ai (Easiest)
+### Option 1: Claude Desktop / Claude.ai
 
 1. Open Claude Desktop or go to [claude.ai](https://claude.ai)
 2. Go to **Settings → Connectors → Add custom connector**
@@ -12,7 +12,14 @@ Search 284 episodes of [Lenny's Podcast](https://www.lennysnewsletter.com/podcas
 4. Click **Add** and enable the connector
 5. Start asking questions!
 
-### Option 2: Claude Code CLI
+### Option 2: ChatGPT
+
+1. Go to **Settings → Apps → Enable Developer Mode**
+2. Click **Create App**
+3. Add a name and paste the URL: `https://lenny-mcp.onrender.com/mcp`
+4. Save and start using it!
+
+### Option 3: Claude Code CLI
 
 ```bash
 claude mcp add -t http -s user lenny-transcripts https://lenny-mcp.onrender.com/mcp
