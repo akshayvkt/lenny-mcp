@@ -2,12 +2,13 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import express, { Request, Response } from "express";
+import { randomUUID } from "crypto";
 
 import { loadTranscripts, downloadTranscripts } from "./loader.js";
 import {
@@ -211,9 +212,9 @@ async function runStdio() {
   console.error("MCP Server running. Waiting for requests...");
 }
 
-// Run in SSE mode (remote/hosted)
-async function runSSE() {
-  console.error("Starting Lenny's Podcast MCP Server (SSE mode)...");
+// Run in HTTP mode (remote/hosted) using Streamable HTTP transport
+async function runHTTP() {
+  console.error("Starting Lenny's Podcast MCP Server (HTTP mode)...");
 
   // Download transcripts from Dropbox if not present locally
   await downloadTranscripts();
@@ -224,8 +225,8 @@ async function runSSE() {
   const app = express();
   app.use(express.json());
 
-  // Track active transports by sessionId
-  const transports: { [sessionId: string]: SSEServerTransport } = {};
+  // Track transports by session ID
+  const transports = new Map<string, StreamableHTTPServerTransport>();
 
   // Health check endpoint
   app.get("/health", (_req: Request, res: Response) => {
@@ -237,74 +238,86 @@ async function runSSE() {
       status: "ok",
       episodes: episodes.length,
       endpoints: {
-        sse: "/sse",
-        messages: "/messages",
+        mcp: "/mcp",
         health: "/health"
       }
     });
   });
 
-  // OAuth endpoints - return JSON 404 to indicate no auth required
-  // (prevents Claude Code from getting confused by HTML 404 errors)
-  app.get("/.well-known/oauth-authorization-server", (_req: Request, res: Response) => {
-    res.status(404).json({ error: "not_found", message: "No authorization required" });
-  });
+  // Main MCP endpoint - handles all MCP communication
+  app.post("/mcp", async (req: Request, res: Response) => {
+    console.error(`MCP request received`);
 
-  app.get("/.well-known/oauth-protected-resource", (_req: Request, res: Response) => {
-    res.status(404).json({ error: "not_found", message: "No authorization required" });
-  });
+    // Check for existing session
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    let transport = sessionId ? transports.get(sessionId) : undefined;
 
-  app.post("/register", (_req: Request, res: Response) => {
-    res.status(404).json({ error: "not_found", message: "No registration required" });
-  });
+    if (!transport) {
+      // Create new transport for new sessions
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+      });
 
-  app.post("/oauth/register", (_req: Request, res: Response) => {
-    res.status(404).json({ error: "not_found", message: "No registration required" });
-  });
+      // Connect the MCP server to this transport
+      const server = createMCPServer();
+      await server.connect(transport);
 
-  // SSE endpoint - clients connect here
-  app.get("/sse", async (_req: Request, res: Response) => {
-    console.error(`New SSE connection from ${_req.ip}`);
+      // Store transport by session ID once it's assigned
+      if (transport.sessionId) {
+        transports.set(transport.sessionId, transport);
+        console.error(`New session created: ${transport.sessionId}`);
+      }
 
-    const transport = new SSEServerTransport("/messages", res);
-    const sessionId = transport.sessionId;
-    transports[sessionId] = transport;
-
-    console.error(`Session created: ${sessionId}`);
-
-    res.on("close", () => {
-      console.error(`SSE connection closed: ${sessionId}`);
-      delete transports[sessionId];
-    });
-
-    const server = createMCPServer();
-    await server.connect(transport);
-  });
-
-  // Messages endpoint - clients POST messages here
-  app.post("/messages", async (req: Request, res: Response) => {
-    const sessionId = req.query.sessionId as string;
-    console.error(`Message received for session: ${sessionId}`);
-
-    const transport = transports[sessionId];
-    if (transport) {
-      await transport.handlePostMessage(req, res);
-    } else {
-      console.error(`No transport found for session: ${sessionId}`);
-      res.status(400).json({ error: "No transport found for sessionId" });
+      // Clean up on close
+      transport.onclose = () => {
+        if (transport?.sessionId) {
+          transports.delete(transport.sessionId);
+          console.error(`Session closed: ${transport.sessionId}`);
+        }
+      };
     }
+
+    // Handle the request
+    await transport.handleRequest(req, res, req.body);
+  });
+
+  // Handle GET requests to /mcp for SSE streams (backwards compatibility)
+  app.get("/mcp", async (req: Request, res: Response) => {
+    console.error(`SSE connection request received`);
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    const transport = sessionId ? transports.get(sessionId) : undefined;
+
+    if (!transport) {
+      res.status(400).json({ error: "No session found. Send POST to /mcp first." });
+      return;
+    }
+
+    await transport.handleRequest(req, res);
+  });
+
+  // Handle DELETE for session cleanup
+  app.delete("/mcp", async (req: Request, res: Response) => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    if (sessionId) {
+      const transport = transports.get(sessionId);
+      if (transport) {
+        await transport.close();
+        transports.delete(sessionId);
+      }
+    }
+    res.status(200).json({ ok: true });
   });
 
   app.listen(PORT, () => {
     console.error(`MCP Server listening on http://localhost:${PORT}`);
-    console.error(`SSE endpoint: http://localhost:${PORT}/sse`);
+    console.error(`MCP endpoint: http://localhost:${PORT}/mcp`);
   });
 }
 
 // Main entry point
 async function main() {
-  if (MODE === "sse") {
-    await runSSE();
+  if (MODE === "sse" || MODE === "http") {
+    await runHTTP();
   } else {
     await runStdio();
   }
