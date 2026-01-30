@@ -8,9 +8,9 @@ export interface Episode {
   path: string;
 }
 
-// Dropbox download URL (dl=1 for direct download)
-const DROPBOX_URL =
-  "https://www.dropbox.com/scl/fo/yxi4s2w998p1gvtpu4193/AMdNPR8AOw0lMklwtnC0TrQ?rlkey=mwwj2oygno72le23o6kvzq5wq&dl=1";
+// GitHub repository URL for transcripts
+const GITHUB_URL =
+  "https://github.com/ChatPRD/lennys-podcast-transcripts/archive/refs/heads/main.zip";
 
 // Default paths
 const DEFAULT_LOCAL_PATH =
@@ -27,17 +27,45 @@ function getTranscriptsPath(): string {
   return DEFAULT_LOCAL_PATH;
 }
 
-// Download transcripts from Dropbox (for hosted mode)
+// Strip YAML frontmatter from markdown content
+function stripFrontmatter(content: string): string {
+  if (!content.startsWith("---")) return content;
+  const endIdx = content.indexOf("---", 3);
+  if (endIdx === -1) return content;
+  return content.slice(endIdx + 3).trim();
+}
+
+// Extract guest name from YAML frontmatter
+function extractGuestFromFrontmatter(content: string): string | null {
+  if (!content.startsWith("---")) return null;
+  const endIdx = content.indexOf("---", 3);
+  if (endIdx === -1) return null;
+  const match = content.slice(0, endIdx).match(/^guest:\s*(.+)$/m);
+  return match ? match[1].trim() : null;
+}
+
+// Convert folder name to guest name as fallback
+// e.g., "elena-verna-20" → "Elena Verna"
+function folderToGuest(folder: string): string {
+  return folder
+    .replace(/[-_]\d+$/, "") // Remove trailing numbers like "-20"
+    .split("-")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+// Download transcripts from GitHub (for hosted mode)
 export async function downloadTranscripts(): Promise<void> {
   const targetPath = HOSTED_TRANSCRIPTS_PATH;
 
   // Check if transcripts already exist
   try {
     await access(targetPath);
-    const files = await readdir(targetPath);
-    if (files.length > 100) {
+    const entries = await readdir(targetPath, { withFileTypes: true });
+    const episodeDirs = entries.filter((e) => e.isDirectory());
+    if (episodeDirs.length > 100) {
       console.error(
-        `Transcripts already exist at ${targetPath} (${files.length} files)`
+        `Transcripts already exist at ${targetPath} (${episodeDirs.length} episodes)`
       );
       return;
     }
@@ -45,14 +73,14 @@ export async function downloadTranscripts(): Promise<void> {
     // Directory doesn't exist, we need to download
   }
 
-  console.error("Downloading transcripts from Dropbox...");
+  console.error("Downloading transcripts from GitHub...");
 
   try {
     // Create target directory
     await mkdir(targetPath, { recursive: true });
 
     // Download the zip file
-    const response = await fetch(DROPBOX_URL, {
+    const response = await fetch(GITHUB_URL, {
       redirect: "follow",
       headers: {
         "User-Agent": "lenny-mcp/1.0",
@@ -90,27 +118,38 @@ export async function downloadTranscripts(): Promise<void> {
     const execAsync = promisify(exec);
 
     console.error("Extracting transcripts...");
-    // Use -o to overwrite, -j to junk paths (flatten), ignore warnings (exit code 1 or 2)
+    const tempExtractPath = "/tmp/lenny-extract";
+
+    // Clean up any previous extraction attempt
     try {
-      await execAsync(`unzip -o -j "${zipPath}" -d "${targetPath}"`);
-    } catch (unzipError: any) {
-      // unzip returns exit code 1 for warnings, 2 for minor errors - check if files exist
-      const extractedFiles = await readdir(targetPath);
-      if (extractedFiles.filter(f => f.endsWith('.txt')).length < 50) {
-        throw unzipError; // Real error, not enough files extracted
-      }
-      console.error("Unzip completed with warnings (this is normal for this archive)");
+      await execAsync(`rm -rf "${tempExtractPath}"`);
+    } catch {
+      // Ignore if doesn't exist
     }
 
-    // Clean up zip file
+    // Extract to temp directory (preserves folder structure)
+    await execAsync(`unzip -o "${zipPath}" -d "${tempExtractPath}"`);
+
+    // GitHub zips extract to: lennys-podcast-transcripts-main/episodes/{guest}/transcript.md
+    const extractedEpisodesPath = `${tempExtractPath}/lennys-podcast-transcripts-main/episodes`;
+
+    // Move episode folders to target path
+    await execAsync(`cp -r "${extractedEpisodesPath}"/* "${targetPath}/"`);
+
+    // Clean up temp files
     try {
-      await execAsync(`rm "${zipPath}"`);
+      await execAsync(`rm -rf "${tempExtractPath}" "${zipPath}"`);
     } catch {
       // Ignore cleanup errors
     }
 
-    const files = await readdir(targetPath);
-    console.error(`Extracted ${files.length} transcript files`);
+    // Verify extraction by counting episode directories
+    const entries = await readdir(targetPath, { withFileTypes: true });
+    const episodeDirs = entries.filter((e) => e.isDirectory());
+    if (episodeDirs.length < 50) {
+      throw new Error(`Only found ${episodeDirs.length} episodes, expected 300+`);
+    }
+    console.error(`Extracted ${episodeDirs.length} episode transcripts`);
   } catch (error) {
     console.error("Error downloading transcripts:", error);
     throw error;
@@ -122,23 +161,30 @@ export async function loadTranscripts(): Promise<Episode[]> {
   const transcriptsPath = getTranscriptsPath();
 
   try {
-    const files = await readdir(transcriptsPath);
-    const txtFiles = files.filter((f) => f.endsWith(".txt"));
+    const entries = await readdir(transcriptsPath, { withFileTypes: true });
+    const directories = entries.filter((e) => e.isDirectory());
 
     console.error(
-      `Loading ${txtFiles.length} transcripts from ${transcriptsPath}...`
+      `Loading transcripts from ${directories.length} episode folders in ${transcriptsPath}...`
     );
 
-    for (const file of txtFiles) {
-      const filePath = join(transcriptsPath, file);
-      const content = await readFile(filePath, "utf-8");
-      const guest = file.replace(".txt", "");
+    for (const dir of directories) {
+      const transcriptPath = join(transcriptsPath, dir.name, "transcript.md");
 
-      episodes.push({
-        guest,
-        content,
-        path: filePath,
-      });
+      try {
+        const rawContent = await readFile(transcriptPath, "utf-8");
+        const guest =
+          extractGuestFromFrontmatter(rawContent) || folderToGuest(dir.name);
+        const content = stripFrontmatter(rawContent);
+
+        episodes.push({
+          guest,
+          content,
+          path: transcriptPath,
+        });
+      } catch {
+        // Skip directories without transcript.md (e.g., .git, scripts, index)
+      }
     }
 
     console.error(`Loaded ${episodes.length} episodes successfully.`);
